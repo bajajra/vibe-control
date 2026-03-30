@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="vibecontrol_logo.png" alt="Vibe Control logo" width="220"/>
+  <img
+    src="https://raw.githubusercontent.com/bajajra/vibe-control/main/vibecontrol_logo.png"
+    alt="Vibe Control logo"
+    width="220"
+  />
 </p>
 
 # Vibe Control
