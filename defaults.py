@@ -1,0 +1,110 @@
+"""
+Built-in defaults for Vibe Control — always merged with config.json so DMG / first run has full mappings.
+"""
+
+DEFAULT_CONFIG = {
+    "mouse": {
+        "sensitivity": 1.0,
+        "acceleration_curve": 2.0,
+        "deadzone": 0.15,
+        "speeds": [5, 15, 35],
+        "default_speed_level": 1,
+    },
+    "scroll": {
+        "vertical_speed": 3,
+        "horizontal_speed": 3,
+        "deadzone": 0.25,
+        "throttle_ms": 30,
+    },
+    "dictation": {
+        "engine": "google",
+        "language": "en-US",
+    },
+    "vibration": {
+        "enabled": True,
+        "on_startup": True,
+        "on_dictation": True,
+        "on_mode_change": True,
+        "on_approval_prompt": True,
+        "approval_prompt_scan_ms": 300,
+        "approval_prompt_pulse_ms": 520,
+    },
+    "mux": {
+        "enabled": True,
+        "prefix_mod": ["control"],
+        "prefix_key": "b",
+        "after_prefix_delay_s": 0.05,
+        "next_window_key": "n",
+        "prev_window_key": "p",
+    },
+    "shortcut_overrides": {},
+    "button_indices": {
+        "cross": 0,
+        "circle": 1,
+        "square": 2,
+        "triangle": 3,
+        "share": 4,
+        "ps": 5,
+        "options": 6,
+        "l3": 7,
+        "r3": 8,
+        "l1": 9,
+        "r1": 10,
+        "dpad_up": 11,
+        "dpad_down": 12,
+        "dpad_left": 13,
+        "dpad_right": 14,
+        "touchpad": 15,
+    },
+    "axis_indices": {
+        "left_x": 0,
+        "left_y": 1,
+        "right_x": 2,
+        "right_y": 3,
+        "l2_trigger": 4,
+        "r2_trigger": 5,
+    },
+    "normal_mode": {
+        "cross": "left_click",
+        "circle": "backspace",
+        "square": "copy",
+        "triangle": "paste",
+        "l3": "right_click",
+        "r3": "cycle_speed",
+        "options": "command_palette",
+        "share": "save_file",
+        "touchpad": "speak_to_ai",
+        "dpad_up": "arrow_up",
+        "dpad_down": "arrow_down",
+        "dpad_left": "arrow_left",
+        "dpad_right": "arrow_right",
+        "r2_trigger": "enter",
+    },
+    "code_mode": {
+        "cross": "go_to_definition",
+        "circle": "word_backspace",
+        "square": "find",
+        "triangle": "toggle_terminal",
+        "l3": "undo",
+        "r3": "escape",
+        "options": "ai_chat",
+        "share": "interrupt",
+        "touchpad": "app_switch",
+        "dpad_up": "quick_open",
+        "dpad_down": "go_to_symbol",
+        "dpad_left": "prev_tab",
+        "dpad_right": "next_tab",
+        "r2_trigger": "enter",
+    },
+}
+
+
+def deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursive merge: overlay wins. Shallow copies dicts."""
+    out = dict(base)
+    for key, val in overlay.items():
+        if key in out and isinstance(out[key], dict) and isinstance(val, dict):
+            out[key] = deep_merge(out[key], val)
+        else:
+            out[key] = val
+    return out

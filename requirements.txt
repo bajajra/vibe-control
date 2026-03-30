@@ -1,0 +1,6 @@
+pygame>=2.5.0
+pyautogui>=0.9.54
+SpeechRecognition>=3.10.0
+PyAudio>=0.2.13
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-ApplicationServices>=10.0

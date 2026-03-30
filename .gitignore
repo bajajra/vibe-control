@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+*.spec.bak
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+*.swp
+
+# PyInstaller / py2app noise
+*.toc
+
+# IDE
+.idea/
+.vscode/
+
+# Legacy / generated iconset folders (regenerate from PNG if needed)
+*.iconset/
