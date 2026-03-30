@@ -71,6 +71,19 @@ pyinstaller VibeControl.spec --noconfirm
 
 Output: **`dist/Vibe Control.app`**. Put that in **Applications**, or wrap it in a **DMG** for distribution.
 
+### Option C — Prebuilt DMG (GitHub Actions)
+
+CI builds an **Apple Silicon (arm64)** DMG on every manual run and on **version tags**.
+
+| How | What you get |
+|-----|----------------|
+| **[Actions](https://github.com/bajajra/vibe-control/actions)** → **Build macOS DMG** → **Run workflow** | Download the **artifact** from the completed run (no Release required). |
+| **Release** | Create a tag such as `v1.0.0` and push it: `git tag v1.0.0 && git push origin v1.0.0`. The workflow attaches **`VibeControl-v1.0.0-macos-arm64.dmg`** to a GitHub Release. |
+
+The DMG includes **Vibe Control.app** and an **Applications** shortcut for drag-and-drop install.
+
+> **Intel Macs:** this workflow targets **arm64** only. Build locally from source or adjust `VibeControl.spec` (`target_arch`) for `x86_64` or `universal2` if you need Intel binaries.
+
 **First launch**
 
 1. If macOS blocks the download, use **right-click → Open** once (Gatekeeper).

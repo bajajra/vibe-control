@@ -1,0 +1,84 @@
+# Builds Vibe Control.app with PyInstaller, packages a drag-to-Applications DMG,
+# uploads a workflow artifact, and (on version tags) attaches the DMG to a GitHub Release.
+#
+# Triggers:
+#   - workflow_dispatch  → artifact only (Actions tab → workflow run → Artifacts)
+#   - push tag v*        → artifact + Release with DMG (e.g. git tag v1.0.0 && git push origin v1.0.0)
+
+name: Build macOS DMG
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install PortAudio (for PyAudio)
+        run: brew install portaudio
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt "pyinstaller>=6.0"
+
+      - name: PyInstaller
+        run: pyinstaller VibeControl.spec --noconfirm
+
+      - name: Remove loose COLLECT folder from dist
+        run: rm -rf dist/VibeControl
+
+      - name: Assemble DMG layout (app + Applications alias)
+        run: |
+          mkdir -p dmg_layout
+          cp -R "dist/Vibe Control.app" dmg_layout/
+          ln -s /Applications dmg_layout/Applications
+
+      - name: DMG filename
+        id: meta
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            stem="VibeControl-${GITHUB_REF_NAME}-macos-arm64"
+          else
+            stem="VibeControl-nightly-${GITHUB_SHA:0:7}"
+          fi
+          echo "stem=${stem}" >> "$GITHUB_OUTPUT"
+          echo "Building ${stem}.dmg"
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "Vibe Control" -srcfolder dmg_layout -ov -format UDZO \
+            "dist/${{ steps.meta.outputs.stem }}.dmg"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.stem }}
+          path: dist/${{ steps.meta.outputs.stem }}.dmg
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (tags only)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ steps.meta.outputs.stem }}.dmg
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
