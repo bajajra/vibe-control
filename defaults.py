@@ -129,8 +129,8 @@ DEFAULT_CONFIG = {
         "touchpad": "speak_to_ai",
         "dpad_up": "arrow_up",
         "dpad_down": "arrow_down",
-        "dpad_left": "arrow_left",
-        "dpad_right": "arrow_right",
+        "dpad_left": "prev_pane",
+        "dpad_right": "next_pane",
         "r2_trigger": "enter",
     },
     "code_mode": {

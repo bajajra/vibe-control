@@ -8,6 +8,7 @@ import sys
 import time
 import math
 import json
+import logging
 import subprocess
 
 import pygame
@@ -38,6 +39,13 @@ from keymap import chord_from_event, format_chord
 
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # move mouse to top-left corner to abort
+
+# ── Debug log ──────────────────────────────────────────────────────
+log = logging.getLogger("vibecontrol")
+log.setLevel(logging.DEBUG)
+_fh = logging.FileHandler(os.path.expanduser("~/vibecontrol.log"))
+_fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-5s  %(message)s"))
+log.addHandler(_fh)
 
 SPEED_LABELS = ["SLOW", "MEDIUM", "FAST"]
 
@@ -144,6 +152,10 @@ ACTION_LABELS = {
     "app_switch": "App switcher",
     "next_app_window": "Next window (same app · ⌘`)",
     "prev_app_window": "Previous window (same app · ⌘⇧`)",
+    "mux_next_window": "Tmux next window (Ctrl+b n)",
+    "mux_prev_window": "Tmux previous window (Ctrl+b p)",
+    "next_pane": "Next pane (⌘])",
+    "prev_pane": "Previous pane (⌘[)",
 }
 
 # Keyboard shortcut definitions used by action handlers.
@@ -185,6 +197,8 @@ SHORTCUTS = {
     "app_switch":       ("command", "tab"),
     "next_app_window":  ("command", "`"),
     "prev_app_window":  ("command", "shift", "`"),
+    "next_pane":        ("command", "]"),
+    "prev_pane":        ("command", "["),
 }
 
 
@@ -397,15 +411,35 @@ class ControllerInterface:
         """Send tmux/screen-style prefix key then a command key (default Ctrl+b)."""
         mux = self.cfg.get("mux", {}) or {}
         if not mux.get("enabled", True):
+            log.debug("mux_send SKIPPED (disabled) key=%s", key)
             return
-        mods = tuple(mux.get("prefix_mod", ["control"]))
         pk = str(mux.get("prefix_key", "b"))
         delay = float(mux.get("after_prefix_delay_s", 0.05))
-        pyautogui.hotkey(*mods, pk)
+        log.debug("mux_send key=%s prefix_key=%s delay=%.3f", key, pk, delay)
+        # Send Ctrl+key as raw control character via AppleScript —
+        # pyautogui modifier keys are unreliable on macOS.
+        # Ctrl+b = ASCII 2, Ctrl+a = ASCII 1, etc.
+        ctrl_char = chr(ord(pk.lower()) - ord('a') + 1)
+        script = (
+            'tell application "System Events" to keystroke '
+            f'(ASCII character {ord(ctrl_char)})'
+        )
+        subprocess.run(["osascript", "-e", script],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=2)
         time.sleep(delay)
         pyautogui.press(key)
 
     def _fire_action(self, name: str):
+        # Mux actions bypass the shortcut table
+        if name == "mux_next_window":
+            mux = self.cfg.get("mux", {}) or {}
+            self._mux_send(str(mux.get("next_window_key", "n")))
+            return
+        if name == "mux_prev_window":
+            mux = self.cfg.get("mux", {}) or {}
+            self._mux_send(str(mux.get("prev_window_key", "p")))
+            return
         spec = self.shortcuts.get(name)
         if spec is None:
             return
@@ -418,10 +452,31 @@ class ControllerInterface:
         if spec == ("doubleClick",):
             pyautogui.doubleClick()
             return
-        if len(spec) == 1:
-            pyautogui.press(spec[0])
-        else:
+        # For hotkeys with modifiers, ensure the target app has focus
+        # (the pygame window may have stolen it)
+        if len(spec) > 1:
+            self._ensure_target_focus()
             pyautogui.hotkey(*spec)
+        else:
+            pyautogui.press(spec[0])
+
+    def _ensure_target_focus(self):
+        """If the pygame (Vibe Control) window has focus, re-activate the previous app."""
+        try:
+            from AppKit import NSWorkspace, NSRunningApplication
+            active = NSWorkspace.sharedWorkspace().frontmostApplication()
+            if active and active.localizedName() == "Python":
+                # Activate the most recent non-Python app
+                apps = NSWorkspace.sharedWorkspace().runningApplications()
+                for app in apps:
+                    if (app.isActive() is False
+                            and app.activationPolicy() == 0  # NSApplicationActivationPolicyRegular
+                            and app.localizedName() != "Python"):
+                        app.activateWithOptions_(0)
+                        time.sleep(0.05)
+                        break
+        except Exception:
+            pass
 
     def _init_pygame(self):
         os.environ["SDL_VIDEO_ALLOW_SCREENSAVER"] = "1"
@@ -449,6 +504,8 @@ class ControllerInterface:
         name = self.js.get_name()
         nb, na, nh = self.js.get_numbuttons(), self.js.get_numaxes(), self.js.get_numhats()
         print(f"[OK] {name}  (buttons={nb}  axes={na}  hats={nh})")
+        log.info("Controller: %s  buttons=%d axes=%d hats=%d", name, nb, na, nh)
+        log.info("btn_rev mapping: %s", self.btn_rev)
         if nh == 0:
             print("     D-pad mapped as buttons (no hats)")
 
@@ -638,6 +695,7 @@ class ControllerInterface:
 
     def _btn_down(self, idx):
         name = self.btn_rev.get(idx, f"?{idx}")
+        log.debug("btn_down idx=%d name=%s guide_overlay=%s", idx, name, self.guide_overlay)
         if self.discover:
             print(f"  BTN DOWN  idx={idx}  name={name}")
             return
@@ -728,6 +786,7 @@ class ControllerInterface:
     # ---------------------------------------------------------- dpad / hat
 
     def _hat_motion(self, hx, hy):
+        log.debug("hat_motion hx=%d hy=%d", hx, hy)
         if self.discover:
             print(f"  HAT  x={hx}  y={hy}")
             return
@@ -741,22 +800,22 @@ class ControllerInterface:
     def _dpad_press(self, direction):
         # Normal mode only: L2 + D-pad hops Terminal windows (⌘`) / tmux panes (prefix+n/p).
         # Skipped in code mode so L2 + D-pad still maps to IDE shortcuts.
+        l2_gate = self._l2_chord_gate()
+        log.debug("dpad_press dir=%s l1_held=%s l2_gate=%s active=%s",
+                  direction, self.l1_held, l2_gate, self.active)
         if (
             not self.l1_held
-            and self._l2_chord_gate()
+            and l2_gate
             and direction in ("left", "right", "up", "down")
         ):
-            mux = self.cfg.get("mux", {}) or {}
-            next_k = str(mux.get("next_window_key", "n"))
-            prev_k = str(mux.get("prev_window_key", "p"))
-            if direction == "left" and not self._throttled("l2_dpad_prev_win", 350):
+            if direction == "left" and not self._throttled("l2_dpad_prev_pane", 350):
+                self._fire_action("prev_pane")
+            elif direction == "right" and not self._throttled("l2_dpad_next_pane", 350):
+                self._fire_action("next_pane")
+            elif direction == "up" and not self._throttled("l2_dpad_prev_win", 350):
                 self._fire_action("prev_app_window")
-            elif direction == "right" and not self._throttled("l2_dpad_next_win", 350):
+            elif direction == "down" and not self._throttled("l2_dpad_next_win", 350):
                 self._fire_action("next_app_window")
-            elif direction == "down" and not self._throttled("l2_dpad_mux_next", 350):
-                self._mux_send(next_k)
-            elif direction == "up" and not self._throttled("l2_dpad_mux_prev", 350):
-                self._mux_send(prev_k)
             return
         if not self.active:
             return
