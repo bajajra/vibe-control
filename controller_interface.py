@@ -15,6 +15,7 @@ import pyautogui
 
 from dictation import DictationHandler
 from defaults import DEFAULT_CONFIG, deep_merge
+from dualsense_rumble import DualSenseRumble, detect_hid_bt
 from prompt_detect import approval_prompt_active
 from ui_draw import (
     COL_ACCENT,
@@ -41,6 +42,70 @@ pyautogui.FAILSAFE = True  # move mouse to top-left corner to abort
 SPEED_LABELS = ["SLOW", "MEDIUM", "FAST"]
 
 MOUSE_ACTIONS = frozenset({"left_click", "right_click", "double_click"})
+
+# Row height for the bindings list (controller + action + chord)
+BIND_ROW_H = 52
+
+# Map config button keys to on-screen DualSense labels
+_PHYSICAL_BTN_LABEL = {
+    "cross": "✕",
+    "circle": "○",
+    "square": "□",
+    "triangle": "△",
+    "l1": "L1",
+    "r1": "R1",
+    "l3": "L3",
+    "r3": "R3",
+    "l2_trigger": "L2",
+    "r2_trigger": "R2 (full pull)",
+    "touchpad": "Touchpad",
+    "options": "Options",
+    "share": "Share / Create",
+    "ps": "PS",
+    "dpad_up": "D-pad ↑",
+    "dpad_down": "D-pad ↓",
+    "dpad_left": "D-pad ◀",
+    "dpad_right": "D-pad ▶",
+}
+
+# Scrollable binding reference (Options+Share opens overlay). Lines starting with "▸" are section titles.
+_GUIDE_LINES = [
+    "▸ Open / close this guide",
+    "Options + Share — show or hide (works even if controller is paused)",
+    "While open: ○ / PS / Options+Share / Esc — close · right stick ↕ or mouse wheel — scroll",
+    "",
+    "▸ Sticks & triggers",
+    "Left stick — mouse (normal) · arrow keys (hold L1 code mode)",
+    "Right stick — scroll in the focused app (not while this guide is open)",
+    "L2 hold — slow / precision mouse",
+    "R2 full pull — Enter (same action as in config for normal / code)",
+    "",
+    "▸ Global chords (any time, even when paused)",
+    "L2 + ✕ (Cross) — Enter / Run in prompts",
+    "L2 + ○ (Circle) — Escape",
+    "",
+    "▸ Normal mode (L1 released)",
+    "✕ — left click    ○ — backspace    □ — copy    △ — paste",
+    "L3 — right click    R3 — cycle mouse speed",
+    "D-pad — arrow keys    Options — command palette    Share — save",
+    "Touchpad — AI chat + dictate + paste + Enter",
+    "R1 hold — voice dictation (release to transcribe & paste)",
+    "PS — pause / resume controller (mouse & shortcuts)",
+    "L2 + D-pad ◀ ▶ — prev / next window (same app, ⌘⇧` / ⌘`)",
+    "L2 + D-pad ▲ ▼ — tmux / screen prev & next window (prefix from config)",
+    "",
+    "▸ Code mode (hold L1)",
+    "Left stick — navigate code with arrows",
+    "✕ — go to definition    ○ — delete word    □ — find    △ — terminal",
+    "D-pad — quick open / symbol / prev tab / next tab",
+    "Options — AI chat    Share — Ctrl+C interrupt    Touchpad — app switcher",
+    "L3 — undo    R3 — Escape",
+    "",
+    "▸ App window",
+    "Dashboard — live status    Bindings — DualSense → keyboard (edit chords)",
+    "Bindings: select row, Enter, then type new shortcut",
+]
+_GUIDE_LINE_H = 20
 
 ACTION_LABELS = {
     "left_click": "Left click",
@@ -189,6 +254,7 @@ class ControllerInterface:
         self.dictation = DictationHandler(
             engine=dcfg.get("engine", "google"),
             language=dcfg.get("language", "en-US"),
+            corrections=dcfg.get("corrections", {}),
         )
         self.dictation.set_callbacks(
             on_transcription=self._on_text,
@@ -221,8 +287,24 @@ class ControllerInterface:
         self._bind_recording_action = None
         self._tab_dash_r = pygame.Rect(0, 0, 0, 0)
         self._tab_bind_r = pygame.Rect(0, 0, 0, 0)
+        self._tab_dict_r = pygame.Rect(0, 0, 0, 0)
         self._bind_rows = []
         self._mouse_chip_rects = []
+        self.guide_overlay = False
+        self.guide_scroll = 0
+        self._guide_close_r = pygame.Rect(0, 0, 0, 0)
+
+        # Dictation corrections tab state
+        self._dict_scroll = 0
+        self._dict_selected_idx = -1
+        self._dict_editing = None       # None | "pattern" | "replacement"
+        self._dict_edit_buf = ""
+        self._dict_adding = False        # True when adding a new entry
+        self._dict_add_pattern = ""
+        self._dict_add_replacement = ""
+        self._dict_add_field = "pattern"  # which field is active: "pattern" | "replacement"
+        self._dict_rows = []
+        self._dict_add_btn_r = pygame.Rect(0, 0, 0, 0)
 
         self._init_pygame()
 
@@ -257,6 +339,51 @@ class ControllerInterface:
             if aid in self.shortcuts:
                 seen.add(aid)
         self._bind_action_ids = sorted(seen, key=lambda x: ACTION_LABELS.get(x, x).lower())
+
+    def _physical_btn(self, btn_key: str) -> str:
+        return _PHYSICAL_BTN_LABEL.get(btn_key, btn_key.replace("_", " "))
+
+    def _controller_combo_summary(self, aid: str) -> str:
+        """Human-readable DualSense combos that trigger this action (keyboard chord is separate)."""
+        pieces: list[str] = []
+        seen: set[str] = set()
+
+        def add(s: str) -> None:
+            if s not in seen:
+                seen.add(s)
+                pieces.append(s)
+
+        orphan_ctrl = {
+            "next_app_window": "Normal · L2 + D-pad ▶",
+            "prev_app_window": "Normal · L2 + D-pad ◀",
+        }
+        if aid in orphan_ctrl:
+            add(orphan_ctrl[aid])
+        for btn, act in self.normal_actions.items():
+            if act == aid:
+                add(f"Normal · {self._physical_btn(btn)}")
+        for btn, act in self.code_actions.items():
+            if act == aid:
+                add(f"L1 · {self._physical_btn(btn)}")
+        if aid == "enter":
+            add("L2 + ✕ (any time)")
+        if aid == "escape":
+            add("L2 + ○ (any time)")
+        if not pieces:
+            return "—"
+        return "    ".join(pieces)
+
+    @staticmethod
+    def _truncate_to_width(font, text: str, max_w: int) -> str:
+        if max_w <= 10 or not text:
+            return text
+        if font.size(text)[0] <= max_w:
+            return text
+        ell = "…"
+        t = text
+        while t and font.size(t + ell)[0] > max_w:
+            t = t[:-1]
+        return t + ell if t else ell
 
     def _save_config(self):
         try:
@@ -328,11 +455,24 @@ class ControllerInterface:
         # Rumble queue: list of (fire_at_monotonic, low, high, duration_ms)
         # Processed on the main thread each frame — SDL is NOT thread-safe.
         self._rumble_queue = []
+        self._rumble_use_native = False  # True if SDL rumble fails → use HID
+
+        # Native HID rumble for DualSense — SDL rumble silently fails on
+        # macOS (returns True but no vibration).  Use IOKit instead.
+        self._native_rumble = DualSenseRumble()
+        if DualSenseRumble.available():
+            bt = detect_hid_bt()
+            self._native_rumble.probe(bluetooth=bt)
+            self._rumble_use_native = True
+            transport = "Bluetooth" if bt else "USB"
+            print(f"     {transport} HID — using native rumble")
 
         if self.vib_on_startup:
             self._queue_rumble_pattern([
-                (0.0,  0.5, 0.5, 150),
-                (0.25, 0.7, 0.7, 200),
+                (0.4,  0.4, 0.4, 60),
+                (0.52, 0.4, 0.4, 60),
+                (0.64, 0.4, 0.4, 60),
+                (0.76, 0.4, 0.4, 60),
             ])
 
     # ---------------------------------------------------------- vibration
@@ -347,7 +487,7 @@ class ControllerInterface:
             self._rumble_queue.append((now + delay, low, high, dur))
 
     def _tick_approval_prompt_vibration(self, now: float):
-        """Gentle alternating rumble while an approval / run prompt seems visible."""
+        """Alert burst on first detection + gentle alternating rumble while prompt is visible."""
         if (
             not self.vib_enabled
             or not self.vib_on_approval_prompt
@@ -357,10 +497,20 @@ class ControllerInterface:
             return
         if now - self._approval_scan_t >= self.approval_scan_interval_s:
             self._approval_scan_t = now
+            was_active = self._approval_prompt_active
             try:
                 self._approval_prompt_active = approval_prompt_active()
             except Exception:
                 self._approval_prompt_active = False
+            # Strong alert burst on the transition from inactive → active
+            if self._approval_prompt_active and not was_active:
+                self._queue_rumble_pattern([
+                    (0.0, 0.6, 0.6, 120),   # strong double-tap
+                    (0.15, 0.0, 0.0, 60),   # brief pause
+                    (0.0, 0.6, 0.6, 120),   # second tap
+                ])
+                self._approval_pulse_t = now  # reset pulse timer after burst
+                return
         if not self._approval_prompt_active:
             return
         if now - self._approval_pulse_t < self.approval_pulse_interval_s:
@@ -379,10 +529,16 @@ class ControllerInterface:
         remaining = []
         for fire_at, low, high, dur in self._rumble_queue:
             if now >= fire_at:
-                try:
-                    self.js.rumble(low, high, dur)
-                except Exception:
-                    pass
+                if self._rumble_use_native:
+                    self._native_rumble.rumble(low, high, dur)
+                    # IOKit doesn't auto-stop — schedule a stop after duration
+                    if low > 0 or high > 0:
+                        remaining.append((now + dur / 1000.0, 0, 0, 0))
+                else:
+                    try:
+                        self.js.rumble(low, high, dur)
+                    except Exception:
+                        pass
             else:
                 remaining.append((fire_at, low, high, dur))
         self._rumble_queue = remaining
@@ -484,6 +640,25 @@ class ControllerInterface:
         name = self.btn_rev.get(idx, f"?{idx}")
         if self.discover:
             print(f"  BTN DOWN  idx={idx}  name={name}")
+            return
+
+        if self.guide_overlay:
+            if name in ("circle", "ps"):
+                self._close_guide_overlay()
+                return
+            if (name == "share" and self._joy_button("options")) or (
+                name == "options" and self._joy_button("share")
+            ):
+                if not self._throttled("guide_combo", 280):
+                    self._close_guide_overlay()
+                return
+            return
+
+        if (name == "share" and self._joy_button("options")) or (
+            name == "options" and self._joy_button("share")
+        ):
+            if not self._throttled("guide_combo", 280):
+                self._toggle_guide_overlay()
             return
 
         # D-pad buttons (when controller reports hats=0)
@@ -630,6 +805,90 @@ class ControllerInterface:
         except Exception:
             return 0.0
 
+    def _joy_button(self, logical_name: str) -> bool:
+        idx = self.btn.get(logical_name)
+        if idx is None or idx >= self.js.get_numbuttons():
+            return False
+        return bool(self.js.get_button(idx))
+
+    def _toggle_guide_overlay(self):
+        self.guide_overlay = not self.guide_overlay
+        self.guide_scroll = 0
+        if self.guide_overlay:
+            self._clamp_guide_scroll()
+            print("\n  [INFO] Binding guide — ○ / PS / Options+Share / Esc to close")
+
+    def _close_guide_overlay(self):
+        self.guide_overlay = False
+        self.guide_scroll = 0
+
+    def _guide_content_height(self) -> int:
+        return len(_GUIDE_LINES) * _GUIDE_LINE_H + 24
+
+    def _clamp_guide_scroll(self):
+        _, h = self.screen.get_size()
+        view_h = max(120, h - 48 - 88)
+        ch = self._guide_content_height()
+        mx = max(0, ch - view_h)
+        self.guide_scroll = max(0, min(self.guide_scroll, mx))
+
+    def _handle_guide_overlay_scroll(self):
+        ry = self._dz(self.js.get_axis(self.ax["right_y"]), 0.22)
+        if abs(ry) < 0.12:
+            return
+        if self._throttled("guide_rs", 32):
+            return
+        self.guide_scroll += int(-ry * 16)
+        self._clamp_guide_scroll()
+
+    def _draw_guide_overlay(self):
+        w, h = self.screen.get_size()
+        dim = pygame.Surface((w, h), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 210))
+        self.screen.blit(dim, (0, 0))
+
+        panel = pygame.Rect(20, 20, w - 40, h - 40)
+        draw_rounded_rect_alpha(self.screen, (18, 18, 22), panel, 14, 250)
+        pygame.draw.rect(self.screen, COL_ACCENT, panel, width=2, border_radius=14)
+
+        title = self.font_lg.render("Binding guide", True, COL_ACCENT)
+        self.screen.blit(title, (panel.x + 20, panel.y + 16))
+        sub = self.font_sm.render("DualSense → Cursor & macOS", True, COL_TEXT_MUTED)
+        self.screen.blit(sub, (panel.x + 20, panel.y + 44))
+
+        body_top = panel.y + 78
+        body_h = panel.h - 78 - 56
+        body_rect = pygame.Rect(panel.x + 16, body_top, panel.w - 32, body_h)
+        pygame.draw.rect(self.screen, (12, 12, 14), body_rect, border_radius=10)
+        pygame.draw.rect(self.screen, COL_BORDER, body_rect, width=1, border_radius=10)
+
+        prev_clip = self.screen.get_clip()
+        self.screen.set_clip(body_rect)
+        y = body_rect.y + 10 - self.guide_scroll
+        for line in _GUIDE_LINES:
+            if y + _GUIDE_LINE_H < body_rect.top or y > body_rect.bottom:
+                y += _GUIDE_LINE_H
+                continue
+            if not line.strip():
+                y += _GUIDE_LINE_H
+                continue
+            is_head = line.startswith("▸")
+            col = COL_ACCENT if is_head else COL_TEXT
+            f = self.font_sm
+            txt = line[2:].strip() if is_head else line
+            surf = f.render(txt, True, col)
+            self.screen.blit(surf, (body_rect.x + 12, y))
+            y += _GUIDE_LINE_H
+        self.screen.set_clip(prev_clip)
+
+        close = pygame.Rect(panel.centerx - 70, panel.bottom - 48, 140, 36)
+        self._guide_close_r = close
+        hov = close.collidepoint(pygame.mouse.get_pos())
+        draw_rounded_rect(self.screen, COL_SURFACE_HOVER if hov else COL_SURFACE, close, 8)
+        pygame.draw.rect(self.screen, COL_ACCENT, close, width=1, border_radius=8)
+        ct = self.font_sm.render("Close", True, COL_TEXT)
+        self.screen.blit(ct, (close.centerx - ct.get_width() // 2, close.centery - ct.get_height() // 2))
+
     def _draw(self):
         if self.discover:
             w, h = self.screen.get_size()
@@ -645,8 +904,12 @@ class ControllerInterface:
 
         if self.ui_panel == "bindings":
             self._draw_bindings()
+        elif self.ui_panel == "dictation":
+            self._draw_dictation()
         else:
             self._draw_dashboard()
+        if self.guide_overlay:
+            self._draw_guide_overlay()
         pygame.display.flip()
 
     def _layout_tabs(self, w, margin=20):
@@ -654,6 +917,7 @@ class ControllerInterface:
         pill_h = 34
         self._tab_dash_r = pygame.Rect(margin, y, 118, pill_h)
         self._tab_bind_r = pygame.Rect(margin + 126, y, 118, pill_h)
+        self._tab_dict_r = pygame.Rect(margin + 252, y, 118, pill_h)
 
     def _bindings_list_geometry(self):
         w, h = self.screen.get_size()
@@ -664,9 +928,8 @@ class ControllerInterface:
 
     def _clamp_bind_scroll(self):
         _, list_h, _ = self._bindings_list_geometry()
-        row_h = 44
         n = len(self._bind_action_ids)
-        max_s = max(0, n * row_h - list_h + 24)
+        max_s = max(0, n * BIND_ROW_H - list_h + 24)
         self._bind_scroll = max(0, min(self._bind_scroll, max_s))
 
     def _apply_shortcut_override(self, action_id: str, spec: tuple):
@@ -685,7 +948,9 @@ class ControllerInterface:
         self._layout_tabs(w)
         draw_pill(self.screen, self.font_sm, "Dashboard", self._tab_dash_r, active=True)
         hov_b = self._tab_bind_r.collidepoint(mx, my)
-        draw_pill(self.screen, self.font_sm, "Shortcuts", self._tab_bind_r, hover=hov_b)
+        draw_pill(self.screen, self.font_sm, "Bindings", self._tab_bind_r, hover=hov_b)
+        hov_dc = self._tab_dict_r.collidepoint(mx, my)
+        draw_pill(self.screen, self.font_sm, "Dictation", self._tab_dict_r, hover=hov_dc)
 
         # --- main card ---
         panel = pygame.Rect(16, 62, w - 32, h - 78)
@@ -765,13 +1030,18 @@ class ControllerInterface:
         pygame.draw.circle(self.screen, dot_c, (mic_box.x + 16, mic_box.centery), 5)
         if recording:
             pygame.draw.circle(self.screen, (*COL_ACCENT[:3], 40), (mic_box.x + 16, mic_box.centery), 10)
-        lbl = "RECORDING …" if recording else f"Mic · {self.dictation_status}"
+        if recording:
+            lbl = "RECORDING …"
+        elif not self.dictation.mic_available and self._native_rumble.is_bluetooth:
+            lbl = "Mic · NO MIC (BT — use USB for DualSense mic)"
+        else:
+            lbl = f"Mic · {self.dictation_status}"
         self.screen.blit(self.font.render(lbl, True, COL_TEXT), (mic_box.x + 32, mic_box.y + 10))
 
         # --- hint footer ---
         foot_y = panel.bottom - 34
         hints = (
-            "L2+X/O = Enter/Esc · L2+◀▶ = win · L2+▼▲ = mux · "
+            "Opt+Share = guide · L2+X/O = Enter/Esc · L2+◀▶ = win · L2+▼▲ = mux · "
             "Touchpad = AI · R1 = mic · L1 = code · PS = pause"
         )
         self.screen.blit(self.font_sm.render(hints, True, COL_TEXT_MUTED), (px, foot_y))
@@ -784,10 +1054,18 @@ class ControllerInterface:
         self._layout_tabs(w)
         hov_d = self._tab_dash_r.collidepoint(mx, my)
         draw_pill(self.screen, self.font_sm, "Dashboard", self._tab_dash_r, active=False, hover=hov_d)
-        draw_pill(self.screen, self.font_sm, "Shortcuts", self._tab_bind_r, active=True, hover=False)
+        draw_pill(self.screen, self.font_sm, "Bindings", self._tab_bind_r, active=True, hover=False)
+        hov_dc = self._tab_dict_r.collidepoint(mx, my)
+        draw_pill(self.screen, self.font_sm, "Dictation", self._tab_dict_r, hover=hov_dc)
 
         head = pygame.Rect(16, 58, w - 32, 52)
-        draw_search_bar(self.screen, self.font, head, "Keyboard shortcuts", "Customize chords · saved to config")
+        draw_search_bar(
+            self.screen,
+            self.font,
+            head,
+            "Controller → keyboard",
+            "DualSense combos on each row · click row, Enter — change keystroke",
+        )
         pygame.draw.rect(self.screen, COL_BORDER, head, width=1, border_radius=12)
 
         list_top, list_h, _ = self._bindings_list_geometry()
@@ -795,7 +1073,6 @@ class ControllerInterface:
         draw_rounded_rect_alpha(self.screen, COL_SURFACE, panel, radius=14, alpha=235)
         pygame.draw.rect(self.screen, COL_BORDER, panel, width=1, border_radius=14)
 
-        row_h = 44
         inner_w = panel.w - 24
         self._bind_rows = []
         y0 = panel.y + 8 - self._bind_scroll
@@ -803,11 +1080,11 @@ class ControllerInterface:
         visible_bot = panel.bottom - 8
 
         for idx, aid in enumerate(self._bind_action_ids):
-            ry = y0 + idx * row_h
-            if ry + row_h < visible_top or ry > visible_bot:
+            ry = y0 + idx * BIND_ROW_H
+            if ry + BIND_ROW_H < visible_top or ry > visible_bot:
                 self._bind_rows.append((pygame.Rect(0, 0, 0, 0), aid))
                 continue
-            row_rect = pygame.Rect(panel.x + 12, ry, inner_w, row_h - 4)
+            row_rect = pygame.Rect(panel.x + 12, ry, inner_w, BIND_ROW_H - 4)
             self._bind_rows.append((row_rect, aid))
             sel = idx == self._bind_selected_idx
             hov = row_rect.collidepoint(mx, my) and not self._bind_recording_action
@@ -821,9 +1098,6 @@ class ControllerInterface:
                 border_radius=10,
             )
 
-            label = ACTION_LABELS.get(aid, aid.replace("_", " ").title())
-            self.screen.blit(self.font.render(label, True, COL_TEXT), (row_rect.x + 12, row_rect.y + 10))
-
             spec = self.shortcuts.get(aid, ())
             if spec == ("click",):
                 chord_txt = "Left click"
@@ -833,8 +1107,21 @@ class ControllerInterface:
                 chord_txt = "Double click"
             else:
                 chord_txt = format_chord(spec)
-            surf = self.font_mono.render(chord_txt, True, COL_TEXT_MUTED)
-            self.screen.blit(surf, (row_rect.right - surf.get_width() - 12, row_rect.y + 11))
+            chord_surf = self.font_mono.render(chord_txt, True, COL_TEXT_MUTED)
+            chord_w = chord_surf.get_width()
+            max_combo_w = max(60, row_rect.w - 24 - chord_w - 16)
+
+            combo_raw = self._controller_combo_summary(aid)
+            combo_txt = self._truncate_to_width(self.font_sm, combo_raw, max_combo_w)
+            self.screen.blit(self.font_sm.render(combo_txt, True, COL_ACCENT), (row_rect.x + 12, row_rect.y + 6))
+
+            label = ACTION_LABELS.get(aid, aid.replace("_", " ").title())
+            self.screen.blit(self.font_sm.render(label, True, COL_TEXT), (row_rect.x + 12, row_rect.y + 28))
+
+            self.screen.blit(
+                chord_surf,
+                (row_rect.right - chord_w - 12, row_rect.centery - chord_surf.get_height() // 2),
+            )
 
         foot = pygame.Rect(16, h - 42, w - 32, 30)
         if self._bind_recording_action:
@@ -849,7 +1136,7 @@ class ControllerInterface:
         else:
             self.screen.blit(
                 self.font_sm.render(
-                    "Click a row to select · Enter — record shortcut · Scroll wheel — list",
+                    "Select row · Enter — set keystroke · Scroll — list",
                     True,
                     COL_TEXT_MUTED,
                 ),
@@ -874,6 +1161,192 @@ class ControllerInterface:
             pygame.draw.rect(self.screen, COL_BORDER, r, width=1, border_radius=8)
             self.screen.blit(self.font_sm.render(lab, True, COL_TEXT), (cx + 14, y + 6))
             cx += 84
+
+    # ------------------------------------------------- dictation corrections tab
+
+    def _get_corrections_list(self):
+        """Return sorted list of (pattern, replacement) from config."""
+        corr = self.cfg.get("dictation", {}).get("corrections", {})
+        return sorted(corr.items(), key=lambda x: x[0].lower())
+
+    def _dict_list_geometry(self):
+        w, h = self.screen.get_size()
+        list_top = 58 + 52 + 10
+        list_h = max(100, h - list_top - 56)
+        inner_w = w - 32
+        return list_top, list_h, inner_w
+
+    def _clamp_dict_scroll(self):
+        _, list_h, _ = self._dict_list_geometry()
+        items = self._get_corrections_list()
+        n = len(items) + (1 if not self._dict_adding else 2)  # +1 for add button, +2 if adding
+        max_s = max(0, n * BIND_ROW_H - list_h + 24)
+        self._dict_scroll = max(0, min(self._dict_scroll, max_s))
+
+    def _save_correction(self, pattern, replacement):
+        """Add or update a correction in config and reload into DictationHandler."""
+        if not pattern.strip():
+            return
+        self.cfg.setdefault("dictation", {}).setdefault("corrections", {})
+        self.cfg["dictation"]["corrections"][pattern] = replacement
+        self.dictation._corrections = self.dictation._compile_corrections(
+            self.cfg["dictation"]["corrections"]
+        )
+        self._save_config()
+
+    def _delete_correction(self, pattern):
+        """Remove a correction from config and reload."""
+        corr = self.cfg.get("dictation", {}).get("corrections", {})
+        corr.pop(pattern, None)
+        self.dictation._corrections = self.dictation._compile_corrections(corr)
+        self._save_config()
+
+    def _draw_dictation(self):
+        w, h = self.screen.get_size()
+        mx, my = pygame.mouse.get_pos()
+        draw_vertical_gradient(self.screen, w, h, COL_BG_TOP, COL_BG_BOT)
+
+        # --- tabs ---
+        self._layout_tabs(w)
+        hov_d = self._tab_dash_r.collidepoint(mx, my)
+        draw_pill(self.screen, self.font_sm, "Dashboard", self._tab_dash_r, hover=hov_d)
+        hov_b = self._tab_bind_r.collidepoint(mx, my)
+        draw_pill(self.screen, self.font_sm, "Bindings", self._tab_bind_r, hover=hov_b)
+        draw_pill(self.screen, self.font_sm, "Dictation", self._tab_dict_r, active=True)
+
+        # --- header ---
+        head = pygame.Rect(16, 58, w - 32, 52)
+        draw_search_bar(
+            self.screen, self.font, head,
+            "Dictation corrections",
+            "Speech-to-text replacements — fix misheard acronyms",
+        )
+        pygame.draw.rect(self.screen, COL_BORDER, head, width=1, border_radius=12)
+
+        # --- list panel ---
+        list_top, list_h, _ = self._dict_list_geometry()
+        panel = pygame.Rect(16, list_top, w - 32, list_h)
+        draw_rounded_rect_alpha(self.screen, COL_SURFACE, panel, radius=14, alpha=235)
+        pygame.draw.rect(self.screen, COL_BORDER, panel, width=1, border_radius=14)
+
+        inner_w = panel.w - 24
+        items = self._get_corrections_list()
+        self._dict_rows = []
+        y0 = panel.y + 8 - self._dict_scroll
+        visible_top = panel.y + 8
+        visible_bot = panel.bottom - 8
+
+        for idx, (pattern, replacement) in enumerate(items):
+            ry = y0 + idx * BIND_ROW_H
+            if ry + BIND_ROW_H < visible_top or ry > visible_bot:
+                self._dict_rows.append((pygame.Rect(0, 0, 0, 0), pattern))
+                continue
+            row_rect = pygame.Rect(panel.x + 12, ry, inner_w, BIND_ROW_H - 4)
+            self._dict_rows.append((row_rect, pattern))
+            sel = idx == self._dict_selected_idx
+            hov = row_rect.collidepoint(mx, my) and not self._dict_editing and not self._dict_adding
+            bg = COL_ACCENT if sel else (COL_SURFACE_HOVER if hov else (34, 34, 38))
+            draw_rounded_rect(self.screen, bg, row_rect, radius=10, width=0)
+            pygame.draw.rect(
+                self.screen,
+                COL_ACCENT if sel else COL_BORDER,
+                row_rect, width=1, border_radius=10,
+            )
+
+            # Show pattern → replacement
+            if sel and self._dict_editing == "pattern":
+                pat_txt = self._dict_edit_buf + "│"
+            else:
+                pat_txt = pattern
+            if sel and self._dict_editing == "replacement":
+                rep_txt = self._dict_edit_buf + "│"
+            else:
+                rep_txt = replacement
+
+            arrow_surf = self.font_sm.render(" → ", True, COL_TEXT_MUTED)
+            pat_surf = self.font_sm.render(pat_txt, True, COL_ACCENT if (sel and self._dict_editing == "pattern") else COL_TEXT)
+            rep_surf = self.font_sm.render(rep_txt, True, COL_ACCENT if (sel and self._dict_editing == "replacement") else COL_TEXT_MUTED)
+
+            cy = row_rect.centery
+            self.screen.blit(pat_surf, (row_rect.x + 12, cy - pat_surf.get_height() // 2))
+            ax = row_rect.x + 12 + pat_surf.get_width()
+            self.screen.blit(arrow_surf, (ax, cy - arrow_surf.get_height() // 2))
+            ax += arrow_surf.get_width()
+            self.screen.blit(rep_surf, (ax, cy - rep_surf.get_height() // 2))
+
+        # --- add new row / add form ---
+        add_y = y0 + len(items) * BIND_ROW_H
+        if self._dict_adding:
+            if visible_top <= add_y + BIND_ROW_H and add_y <= visible_bot:
+                add_rect = pygame.Rect(panel.x + 12, add_y, inner_w, BIND_ROW_H - 4)
+                draw_rounded_rect(self.screen, (34, 34, 38), add_rect, radius=10)
+                pygame.draw.rect(self.screen, COL_ACCENT, add_rect, width=1, border_radius=10)
+
+                pat_label = "Heard: "
+                rep_label = " → Correct: "
+                pat_val = self._dict_add_pattern + ("│" if self._dict_add_field == "pattern" else "")
+                rep_val = self._dict_add_replacement + ("│" if self._dict_add_field == "replacement" else "")
+
+                lbl1 = self.font_sm.render(pat_label, True, COL_TEXT_MUTED)
+                val1 = self.font_sm.render(pat_val, True, COL_ACCENT if self._dict_add_field == "pattern" else COL_TEXT)
+                lbl2 = self.font_sm.render(rep_label, True, COL_TEXT_MUTED)
+                val2 = self.font_sm.render(rep_val, True, COL_ACCENT if self._dict_add_field == "replacement" else COL_TEXT)
+
+                cy = add_rect.centery
+                cx = add_rect.x + 12
+                self.screen.blit(lbl1, (cx, cy - lbl1.get_height() // 2))
+                cx += lbl1.get_width()
+                self.screen.blit(val1, (cx, cy - val1.get_height() // 2))
+                cx += val1.get_width()
+                self.screen.blit(lbl2, (cx, cy - lbl2.get_height() // 2))
+                cx += lbl2.get_width()
+                self.screen.blit(val2, (cx, cy - val2.get_height() // 2))
+        else:
+            if visible_top <= add_y + BIND_ROW_H and add_y <= visible_bot:
+                self._dict_add_btn_r = pygame.Rect(panel.x + 12, add_y, inner_w, BIND_ROW_H - 4)
+                hov_add = self._dict_add_btn_r.collidepoint(mx, my)
+                bg_add = COL_SURFACE_HOVER if hov_add else (34, 34, 38)
+                draw_rounded_rect(self.screen, bg_add, self._dict_add_btn_r, radius=10)
+                pygame.draw.rect(self.screen, COL_BORDER, self._dict_add_btn_r, width=1, border_radius=10)
+                plus_surf = self.font.render("+ Add correction", True, COL_TEXT_MUTED)
+                self.screen.blit(
+                    plus_surf,
+                    (self._dict_add_btn_r.centerx - plus_surf.get_width() // 2,
+                     self._dict_add_btn_r.centery - plus_surf.get_height() // 2),
+                )
+            else:
+                self._dict_add_btn_r = pygame.Rect(0, 0, 0, 0)
+
+        # --- footer ---
+        foot = pygame.Rect(16, h - 42, w - 32, 30)
+        if self._dict_adding:
+            msg = "Tab — switch field · Enter — save · Esc — cancel"
+            self.screen.blit(self.font_sm.render(msg, True, COL_ACCENT), (foot.x + 8, foot.y + 8))
+        elif self._dict_editing:
+            field = "pattern" if self._dict_editing == "pattern" else "replacement"
+            msg = f"Editing {field} · Enter — save · Esc — cancel · Tab — edit other field"
+            self.screen.blit(self.font_sm.render(msg, True, COL_ACCENT), (foot.x + 8, foot.y + 8))
+        else:
+            msg = "Click to select · Enter — edit pattern · Tab — edit replacement · Delete — remove · Scroll — list"
+            self.screen.blit(self.font_sm.render(msg, True, COL_TEXT_MUTED), (foot.x + 8, foot.y + 8))
+
+    def _ui_dict_mouse_down(self, mx, my):
+        """Handle mouse clicks in the Dictation corrections tab."""
+        if self._dict_adding or self._dict_editing:
+            return  # ignore clicks while editing; use keyboard
+        # Click on "+ Add correction" button
+        if self._dict_add_btn_r.w > 0 and self._dict_add_btn_r.collidepoint(mx, my):
+            self._dict_adding = True
+            self._dict_add_pattern = ""
+            self._dict_add_replacement = ""
+            self._dict_add_field = "pattern"
+            self._dict_selected_idx = -1
+            return
+        # Click on a row to select it
+        for i, (rect, _pat) in enumerate(self._dict_rows):
+            if rect.w > 0 and rect.collidepoint(mx, my):
+                self._dict_selected_idx = i
+                return
 
     def _draw_stick(self, cx, cy, ax_x, ax_y, r=32):
         pygame.draw.circle(self.screen, COL_BORDER, (cx, cy), r, 1)
@@ -915,13 +1388,30 @@ class ControllerInterface:
         if ev.button != 1 or self.discover:
             return
         mx, my = ev.pos
+        if self.guide_overlay:
+            if self._guide_close_r.collidepoint(mx, my):
+                self._close_guide_overlay()
+            return
         if self._tab_dash_r.collidepoint(mx, my):
             self.ui_panel = "dashboard"
             self._bind_recording_action = None
+            self._dict_editing = None
+            self._dict_adding = False
             return
         if self._tab_bind_r.collidepoint(mx, my):
             self.ui_panel = "bindings"
             self._bind_recording_action = None
+            self._dict_editing = None
+            self._dict_adding = False
+            return
+        if self._tab_dict_r.collidepoint(mx, my):
+            self.ui_panel = "dictation"
+            self._bind_recording_action = None
+            self._dict_editing = None
+            self._dict_adding = False
+            return
+        if self.ui_panel == "dictation":
+            self._ui_dict_mouse_down(mx, my)
             return
         if self.ui_panel != "bindings":
             return
@@ -937,17 +1427,40 @@ class ControllerInterface:
                 return
 
     def _ui_mouse_wheel(self, ev):
-        if self.discover or self.ui_panel != "bindings":
+        if self.discover:
             return
-        self._bind_scroll -= ev.y * 28
+        if self.guide_overlay:
+            self.guide_scroll = max(0, self.guide_scroll - ev.y * 36)
+            self._clamp_guide_scroll()
+            return
+        if self.ui_panel == "dictation":
+            self._dict_scroll -= ev.y * (BIND_ROW_H // 2)
+            self._clamp_dict_scroll()
+            return
+        if self.ui_panel != "bindings":
+            return
+        self._bind_scroll -= ev.y * (BIND_ROW_H // 2)
         self._clamp_bind_scroll()
 
     def _ui_key_down(self, ev):
         if self.discover:
             return
+        if self.guide_overlay and ev.key == pygame.K_ESCAPE:
+            self._close_guide_overlay()
+            return
         if ev.key == pygame.K_ESCAPE:
             if self._bind_recording_action:
                 self._bind_recording_action = None
+                return
+            if self._dict_adding:
+                self._dict_adding = False
+                return
+            if self._dict_editing:
+                self._dict_editing = None
+                return
+            return
+        if self.ui_panel == "dictation":
+            self._ui_dict_key_down(ev)
             return
         if self.ui_panel != "bindings":
             return
@@ -964,6 +1477,88 @@ class ControllerInterface:
             if idx < len(ids):
                 self._bind_recording_action = ids[idx]
 
+    def _ui_dict_key_down(self, ev):
+        """Handle keyboard input for the Dictation corrections tab."""
+        # --- adding new entry ---
+        if self._dict_adding:
+            if ev.key == pygame.K_TAB:
+                self._dict_add_field = "replacement" if self._dict_add_field == "pattern" else "pattern"
+            elif ev.key == pygame.K_RETURN:
+                if self._dict_add_pattern.strip():
+                    self._save_correction(self._dict_add_pattern, self._dict_add_replacement)
+                self._dict_adding = False
+            elif ev.key == pygame.K_BACKSPACE:
+                if self._dict_add_field == "pattern":
+                    self._dict_add_pattern = self._dict_add_pattern[:-1]
+                else:
+                    self._dict_add_replacement = self._dict_add_replacement[:-1]
+            else:
+                ch = ev.unicode
+                if ch and ch.isprintable():
+                    if self._dict_add_field == "pattern":
+                        self._dict_add_pattern += ch
+                    else:
+                        self._dict_add_replacement += ch
+            return
+
+        # --- editing existing entry ---
+        if self._dict_editing:
+            items = self._get_corrections_list()
+            if self._dict_selected_idx < 0 or self._dict_selected_idx >= len(items):
+                self._dict_editing = None
+                return
+            old_pat, old_rep = items[self._dict_selected_idx]
+            if ev.key == pygame.K_TAB:
+                # Save current field and switch to the other
+                if self._dict_editing == "pattern":
+                    new_pat = self._dict_edit_buf.strip()
+                    if new_pat and new_pat != old_pat:
+                        self._delete_correction(old_pat)
+                        self._save_correction(new_pat, old_rep)
+                    self._dict_editing = "replacement"
+                    # Re-fetch after possible rename
+                    items = self._get_corrections_list()
+                    if self._dict_selected_idx < len(items):
+                        self._dict_edit_buf = items[self._dict_selected_idx][1]
+                else:
+                    self._save_correction(old_pat, self._dict_edit_buf)
+                    self._dict_editing = "pattern"
+                    items = self._get_corrections_list()
+                    if self._dict_selected_idx < len(items):
+                        self._dict_edit_buf = items[self._dict_selected_idx][0]
+            elif ev.key == pygame.K_RETURN:
+                if self._dict_editing == "pattern":
+                    new_pat = self._dict_edit_buf.strip()
+                    if new_pat and new_pat != old_pat:
+                        self._delete_correction(old_pat)
+                        self._save_correction(new_pat, old_rep)
+                    elif new_pat == old_pat:
+                        pass  # no change
+                else:
+                    self._save_correction(old_pat, self._dict_edit_buf)
+                self._dict_editing = None
+            elif ev.key == pygame.K_BACKSPACE:
+                self._dict_edit_buf = self._dict_edit_buf[:-1]
+            else:
+                ch = ev.unicode
+                if ch and ch.isprintable():
+                    self._dict_edit_buf += ch
+            return
+
+        # --- normal selection mode ---
+        items = self._get_corrections_list()
+        if ev.key == pygame.K_RETURN and 0 <= self._dict_selected_idx < len(items):
+            self._dict_editing = "pattern"
+            self._dict_edit_buf = items[self._dict_selected_idx][0]
+        elif ev.key == pygame.K_TAB and 0 <= self._dict_selected_idx < len(items):
+            self._dict_editing = "replacement"
+            self._dict_edit_buf = items[self._dict_selected_idx][1]
+        elif ev.key in (pygame.K_DELETE, pygame.K_BACKSPACE) and 0 <= self._dict_selected_idx < len(items):
+            pat = items[self._dict_selected_idx][0]
+            self._delete_correction(pat)
+            if self._dict_selected_idx >= len(self._get_corrections_list()):
+                self._dict_selected_idx = len(self._get_corrections_list()) - 1
+
     # ---------------------------------------------------------- main loop
 
     def run(self):
@@ -977,6 +1572,7 @@ class ControllerInterface:
             print("  R2 full = Enter")
             print("  L1 + btn = Code mode   R1 (hold) = Dictation   Touchpad = AI voice")
             print("  R3 = Speed   L2+stick = precision mouse   PS = Pause controller")
+            print("  Options+Share = on-screen binding guide")
             print("─" * 52)
 
         clock = pygame.time.Clock()
@@ -993,6 +1589,8 @@ class ControllerInterface:
                             pygame.RESIZABLE,
                         )
                         self._clamp_bind_scroll()
+                        self._clamp_dict_scroll()
+                        self._clamp_guide_scroll()
 
                     elif ev.type == pygame.MOUSEBUTTONDOWN:
                         self._ui_mouse_down(ev)
@@ -1019,6 +1617,7 @@ class ControllerInterface:
                             print("\n  [WARN] Controller disconnected!")
                             self.active = False
                             self._js_instance_id = None
+                            self._native_rumble.close()
 
                     elif ev.type == pygame.JOYDEVICEADDED:
                         # SDL fires JOYDEVICEADDED at startup for every
@@ -1033,13 +1632,22 @@ class ControllerInterface:
                             self.js.init()
                             self._js_instance_id = self.js.get_instance_id()
                             self.active = True
+                            # Re-probe rumble for new connection
+                            self._rumble_use_native = False
+                            self._native_rumble.close()
+                            if DualSenseRumble.available():
+                                bt = detect_hid_bt()
+                                self._native_rumble.probe(bluetooth=bt)
+                                self._rumble_use_native = True
                         except pygame.error as e:
                             print(f"  [ERROR] Could not reinit joystick: {e}")
 
                 self._tick_approval_prompt_vibration(time.monotonic())
                 self._process_rumble_queue()
 
-                if self.active and not self.discover:
+                if self.guide_overlay:
+                    self._handle_guide_overlay_scroll()
+                elif self.active and not self.discover:
                     self._handle_mouse()
                     self._handle_scroll()
                     self._check_r2()
@@ -1053,5 +1661,6 @@ class ControllerInterface:
         except KeyboardInterrupt:
             print("\n\nShutting down.")
         finally:
+            self._native_rumble.close()
             self.dictation.cleanup()
             pygame.quit()

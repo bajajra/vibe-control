@@ -24,7 +24,8 @@
 | **AI chat shortcut** | **Touchpad** (normal mode): opens **AI chat** (Cmd+L), then records like dictation; on release, pastes the transcript and presses **Enter** to send. |
 | **Speed presets** | **R3** cycles mouse speed **Slow → Medium → Fast**. Tweak numbers in config. |
 | **Controller vibration** | Short pulses on **startup**, **dictation start/stop**, **mode change**, and a **soft alternating pulse** while macOS thinks an **approval / run** dialog is open in Cursor, VS Code, or common terminals (heuristic via Accessibility). All toggled in config. |
-| **In-app Shortcuts editor** | **Shortcuts** tab: edit keyboard chords per action; stored in **`shortcut_overrides`** in `config.json` (Raycast-style flow). |
+| **In-app Bindings** | **Bindings** tab: each row shows **controller combos** and the **keystroke** they send; edit chords via **`shortcut_overrides`** in `config.json`. |
+| **On-screen guide** | **Options + Share** toggles a scrollable binding reference overlay (○ / PS / Esc / Close to dismiss). |
 | **Calibration** | **`--discover`** prints raw button/axis indices for non-standard mappings. |
 | **Packaged app** | PyInstaller **`Vibe Control.app`**: config lives in **`~/Library/Application Support/Vibe Control/config.json`** (seeded from the bundle on first run). Older **CtrlStick** config is copied once if present. |
 
@@ -109,7 +110,7 @@ The app merges with built-in defaults, so missing keys still get sensible defaul
 5. Hold **R1** to **dictate** into any focused field; use **touchpad** (normal mode) for the **AI chat** + dictate + send flow.
 6. When Cursor asks to **run** a command: **L2 + X** confirms; **L2 + O** cancels (**Escape**).
 7. **PS** **pauses** controller-driven mouse/shortcuts (chords above still work).
-8. Click the **Shortcuts** tab in the window to rebind actions without hand-editing JSON (optional).
+8. Open the **Bindings** tab to see **DualSense → keyboard** mappings and rebind keystrokes without editing JSON (optional).
 
 ---
 
@@ -172,7 +173,7 @@ Default bindings match **`config.json`** / **`defaults.py`**. You can remap via 
 | Goal | What to use on the controller |
 |------|-------------------------------|
 | **Tabs** in Terminal, iTerm, Warp, or Cursor’s editor | **Code mode** (**L1**): **D-pad ◀ / ▶** → **prev_tab / next_tab** (same as **⌘⇧[** / **⌘⇧]**). |
-| **Separate OS windows** of the same app (e.g. three Terminal windows) | **Normal mode**: hold **L2** + **D-pad ◀ / ▶** → **⌘⇧\`** / **⌘\`** cycle. Rebind in **Shortcuts** if needed (**Next window** / **Previous window**). |
+| **Separate OS windows** of the same app (e.g. three Terminal windows) | **Normal mode**: hold **L2** + **D-pad ◀ / ▶** → **⌘⇧\`** / **⌘\`** cycle. Rebind in **Bindings** if needed (**Next window** / **Previous window**). |
 | **tmux** (or **screen**) windows *inside* one terminal tab | **Normal mode**: hold **L2** + **D-pad ▼** (next) / **▲** (prev). Default = **Ctrl+b** then **n** / **p**. Change prefix or keys under **`mux`** in `config.json`. Set **`mux.enabled`** to `false` to turn off. |
 
 ---
@@ -198,7 +199,7 @@ Status appears in the app window and terminal (**RECORDING → TRANSCRIBING → 
 | `dictation` | Engine, language |
 | `vibration` | `enabled`, `on_startup`, `on_dictation`, `on_mode_change`, `on_approval_prompt`, scan/pulse intervals for approval heuristic |
 | `mux` | tmux/screen-style **prefix** + **n**/**p** for **L2 + D-pad ▼/▲** (`prefix_mod`, `prefix_key`, `next_window_key`, `prev_window_key`, `enabled`) |
-| `shortcut_overrides` | Per-action keyboard chords (see Shortcuts tab) |
+| `shortcut_overrides` | Per-action keyboard chords (see Bindings tab) |
 | `button_indices` / `axis_indices` | Maps physical inputs to pygame indices |
 | `normal_mode` / `code_mode` | Button/trigger → action IDs |
 

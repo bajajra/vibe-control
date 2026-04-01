@@ -39,6 +39,7 @@ OPTIONS = {
         "controller_interface",
         "dictation",
         "defaults",
+        "dualsense_rumble",
         "prompt_detect",
         "ui_draw",
         "keymap",
@@ -48,6 +49,7 @@ OPTIONS = {
         "pytweening",
         "pymsgbox",
         "pyperclip",
+        "hid",
     ],
 }
 
