@@ -336,6 +336,8 @@ class ControllerInterface:
         self._lang_chip_r = pygame.Rect(0, 0, 0, 0)
         self._lang_dropdown_open = False
         self._lang_dropdown_rects = []  # list of (pygame.Rect, lang_code)
+        self._lang_dropdown_scroll = 0
+        self._lang_dropdown_panel = pygame.Rect(0, 0, 0, 0)
         self.guide_overlay = False
         self.guide_scroll = 0
         self._guide_close_r = pygame.Rect(0, 0, 0, 0)
@@ -604,19 +606,23 @@ class ControllerInterface:
             except Exception:
                 pass
 
-        # Set macOS dock icon on the EXISTING NSApplication that pygame/SDL
-        # already created. We do NOT call sharedApplication() to avoid creating
-        # a competing instance — instead we import it to access the singleton
-        # that SDL already initialized.
+        # Set macOS dock icon and process name via AppKit. pygame/SDL has
+        # already created and initialized the NSApplication singleton —
+        # sharedApplication() just returns that existing instance.
         try:
-            import objc
-            NSApp = objc.lookUpClass("NSApplication").sharedApplication()
-            NSImage = objc.lookUpClass("NSImage")
+            from AppKit import NSApplication, NSImage, NSProcessInfo
+            app = NSApplication.sharedApplication()
+
+            # Set dock icon (prefer .icns which has all sizes for crisp rendering)
             icon_file = icns_path if os.path.isfile(icns_path) else png_path
             if os.path.isfile(icon_file):
                 img = NSImage.alloc().initByReferencingFile_(icon_file)
                 if img:
-                    NSApp.setApplicationIconImage_(img)
+                    img.setSize_((512, 512))
+                    app.setApplicationIconImage_(img)
+
+            # Set process name so dock tooltip says "Vibe Control" not "Python"
+            NSProcessInfo.processInfo().setValue_forKey_("Vibe Control", "processName")
         except Exception:
             pass  # pyobjc not available or failed — non-fatal
 
@@ -1140,14 +1146,14 @@ class ControllerInterface:
         draw_card(self.screen, panel, radius=16, alpha=240, glow=self.active)
         px, py = panel.x + 24, panel.y
 
-        # row 1: title + paused badge
+        # row 1: title + subtitle + paused badge
         title = self.font_lg.render("Vibe Control", True, COL_ACCENT)
-        self.screen.blit(title, (px, py + 16))
-        sub = self.font_sm.render("PS controller > Cursor & macOS", True, COL_TEXT_DIM)
-        self.screen.blit(sub, (px, py + 40))
+        self.screen.blit(title, (px, py + 14))
+        sub = self.font_sm.render("DualSense controller for macOS", True, COL_TEXT_MUTED)
+        self.screen.blit(sub, (px, py + 38))
 
         if not self.active:
-            badge = pygame.Rect(panel.right - 100, py + 18, 74, 26)
+            badge = pygame.Rect(panel.right - 100, py + 16, 74, 26)
             draw_rounded_rect_alpha(self.screen, COL_DANGER, badge, badge.h // 2, 35)
             pygame.draw.rect(self.screen, COL_DANGER, badge, width=1, border_radius=badge.h // 2)
             p = self.font_sm.render("PAUSED", True, COL_DANGER)
@@ -1155,11 +1161,15 @@ class ControllerInterface:
                                  badge.centery - p.get_height() // 2))
 
         # --- divider ---
-        div_y = py + 62
+        div_y = py + 58
         draw_soft_divider(self.screen, px, panel.right - 24, div_y)
 
-        # row 2: mode + speed chips (clickable)
-        chip_y = div_y + 14
+        # row 2: mode + speed chips (clickable, with labels)
+        label_y = div_y + 12
+        chip_y = label_y + 18
+
+        # Input Mode
+        self.screen.blit(self.font_sm.render("Input Mode", True, COL_TEXT_MUTED), (px, label_y))
         mode_active = self.mode == "NORMAL"
         self._mode_chip_r = pygame.Rect(px, chip_y, 100, 28)
         hov_mode = self._mode_chip_r.collidepoint(mx, my)
@@ -1169,13 +1179,16 @@ class ControllerInterface:
                   bg_color=(40, 12, 18),
                   hover=hov_mode)
 
-        self._speed_chip_r = pygame.Rect(px + 112, chip_y, 90, 28)
+        # Mouse Speed
+        spd_x = px + 130
+        self.screen.blit(self.font_sm.render("Mouse Speed", True, COL_TEXT_MUTED), (spd_x, label_y))
+        self._speed_chip_r = pygame.Rect(spd_x, chip_y, 100, 28)
         hov_spd = self._speed_chip_r.collidepoint(mx, my)
         draw_chip(self.screen, self.font_sm, SPEED_LABELS[self.speed_idx],
                   self._speed_chip_r, hover=hov_spd)
 
         # --- sticks + triggers section ---
-        sec_y = chip_y + 46
+        sec_y = chip_y + 44
         stick_r = 32
         gap = 40
 
@@ -1278,21 +1291,31 @@ class ControllerInterface:
         self.screen.blit(hints_surf, (px, foot_y))
 
     def _draw_lang_dropdown(self, mx, my, cur_lang):
-        """Draw the premium language dropdown menu."""
+        """Draw the language dropdown menu with scroll support."""
         drop_row_h = 32
         drop_w = 230
         pad = 6
         drop_x = self._lang_chip_r.right - drop_w
         drop_y = self._lang_chip_r.bottom + 6
         n = len(DICTATION_LANGUAGES)
-        drop_h = n * drop_row_h + pad * 2
-        drop_panel = pygame.Rect(drop_x, drop_y, drop_w, drop_h)
+        full_h = n * drop_row_h + pad * 2
 
-        # shadow layers for depth
+        # Clamp height to fit in window
+        _, screen_h = self.screen.get_size()
+        max_h = screen_h - drop_y - 12
+        drop_h = min(full_h, max_h)
+        scrollable = full_h > drop_h
+
+        # Clamp scroll
+        max_scroll = max(0, full_h - drop_h)
+        self._lang_dropdown_scroll = max(0, min(self._lang_dropdown_scroll, max_scroll))
+
+        drop_panel = pygame.Rect(drop_x, drop_y, drop_w, drop_h)
+        self._lang_dropdown_panel = drop_panel
+
+        # shadow + background
         draw_shadow(self.screen, drop_panel, radius=14, offset=6, alpha=100)
         draw_shadow(self.screen, drop_panel, radius=14, offset=3, alpha=50)
-
-        # frosted background
         draw_frosted_panel(self.screen, drop_panel, radius=14, alpha=245)
 
         # subtle accent line at top
@@ -1304,11 +1327,21 @@ class ControllerInterface:
             accent_line.set_at((bx, 0), (*COL_ACCENT[:3], int(fade * 50)))
         self.screen.blit(accent_line, (drop_x + 14, drop_y + 2))
 
+        # Clip to panel and draw rows with scroll offset
+        prev_clip = self.screen.get_clip()
+        self.screen.set_clip(drop_panel)
+
         self._lang_dropdown_rects = []
         for i, (name, code) in enumerate(DICTATION_LANGUAGES):
-            ry = drop_y + pad + i * drop_row_h
+            ry = drop_y + pad + i * drop_row_h - self._lang_dropdown_scroll
             row_r = pygame.Rect(drop_x + pad, ry, drop_w - pad * 2, drop_row_h)
+
+            # Skip rows fully outside visible area (but still register for clicks)
+            visible = ry + drop_row_h > drop_panel.top and ry < drop_panel.bottom
             self._lang_dropdown_rects.append((row_r, code))
+            if not visible:
+                continue
+
             is_cur = code == cur_lang
             hov = row_r.collidepoint(mx, my)
 
@@ -1317,23 +1350,38 @@ class ControllerInterface:
             elif hov:
                 draw_rounded_rect_alpha(self.screen, COL_SURFACE_HOVER, row_r, radius=8, alpha=180)
 
-            # checkmark for selected
             cy = row_r.centery
             if is_cur:
                 check = self.font_sm.render("*", True, (255, 255, 255))
                 self.screen.blit(check, (row_r.x + 10, cy - check.get_height() // 2))
 
-            # language name
             name_x = row_r.x + 30
             text_c = (255, 255, 255) if is_cur else (COL_TEXT if hov else COL_TEXT_MUTED)
             name_surf = self.font_sm.render(name, True, text_c)
             self.screen.blit(name_surf, (name_x, cy - name_surf.get_height() // 2))
 
-            # language code (right-aligned, dimmed)
             code_c = (255, 255, 255, 140) if is_cur else COL_TEXT_DIM
             code_surf = self.font_sm.render(code, True, code_c[:3] if len(code_c) > 3 else code_c)
             self.screen.blit(code_surf, (row_r.right - code_surf.get_width() - 10,
                                          cy - code_surf.get_height() // 2))
+
+        self.screen.set_clip(prev_clip)
+
+        # Scroll indicators
+        if scrollable:
+            if self._lang_dropdown_scroll > 0:
+                # fade at top
+                for fy in range(8):
+                    a = int(200 * (1.0 - fy / 8.0))
+                    pygame.draw.line(self.screen, (20, 20, 24, a) if a > 0 else (20, 20, 24),
+                                     (drop_x + 4, drop_y + fy), (drop_x + drop_w - 4, drop_y + fy))
+            if self._lang_dropdown_scroll < max_scroll:
+                # fade at bottom
+                for fy in range(8):
+                    a = int(200 * (fy / 8.0))
+                    by = drop_panel.bottom - 8 + fy
+                    pygame.draw.line(self.screen, (20, 20, 24),
+                                     (drop_x + 4, by), (drop_x + drop_w - 4, by))
 
     def _draw_bindings(self):
         w, h = self.screen.get_size()
@@ -1732,6 +1780,7 @@ class ControllerInterface:
                 return
             if self._lang_chip_r.collidepoint(mx, my):
                 self._lang_dropdown_open = True
+                self._lang_dropdown_scroll = 0
                 return
             if self._mode_chip_r.collidepoint(mx, my):
                 self.mode = "CODE" if self.mode == "NORMAL" else "NORMAL"
@@ -1762,6 +1811,10 @@ class ControllerInterface:
             self.guide_scroll = max(0, self.guide_scroll - ev.y * 36)
             self._clamp_guide_scroll()
             return
+        if self.ui_panel == "dashboard" and self._lang_dropdown_open:
+            if self._lang_dropdown_panel.collidepoint(pygame.mouse.get_pos()):
+                self._lang_dropdown_scroll -= ev.y * 24
+                return
         if self.ui_panel == "dictation":
             self._dict_scroll -= ev.y * (BIND_ROW_H // 2)
             self._clamp_dict_scroll()
