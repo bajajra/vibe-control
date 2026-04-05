@@ -592,13 +592,9 @@ class ControllerInterface:
             sys.exit(1)
 
     def _set_app_icon(self):
-        """Set the window icon and macOS dock icon from the app logo."""
-        # Resolve icon path (works in both dev and PyInstaller bundle)
+        """Set the window icon from PNG (called during init)."""
         base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
         png_path = os.path.join(base, "vibecontrol_logo.png")
-        icns_path = os.path.join(base, "VibeControl.icns")
-
-        # Set pygame window icon from PNG
         if os.path.isfile(png_path):
             try:
                 icon_surf = pygame.image.load(png_path)
@@ -606,25 +602,26 @@ class ControllerInterface:
             except Exception:
                 pass
 
-        # Set macOS dock icon and process name via AppKit. pygame/SDL has
-        # already created and initialized the NSApplication singleton —
-        # sharedApplication() just returns that existing instance.
+    def _set_dock_icon(self):
+        """Set macOS dock icon and process name via AppKit.
+
+        Called after the first frame renders so SDL has finished its own
+        icon setup and we can safely override the dock tile."""
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        icns_path = os.path.join(base, "VibeControl.icns")
+        png_path = os.path.join(base, "vibecontrol_logo.png")
         try:
             from AppKit import NSApplication, NSImage, NSProcessInfo
             app = NSApplication.sharedApplication()
-
-            # Set dock icon (prefer .icns which has all sizes for crisp rendering)
             icon_file = icns_path if os.path.isfile(icns_path) else png_path
             if os.path.isfile(icon_file):
                 img = NSImage.alloc().initByReferencingFile_(icon_file)
                 if img:
                     img.setSize_((512, 512))
                     app.setApplicationIconImage_(img)
-
-            # Set process name so dock tooltip says "Vibe Control" not "Python"
             NSProcessInfo.processInfo().setValue_forKey_("Vibe Control", "processName")
         except Exception:
-            pass  # pyobjc not available or failed — non-fatal
+            pass
 
     def _init_joystick(self):
         self.js = pygame.joystick.Joystick(0)
@@ -1958,6 +1955,7 @@ class ControllerInterface:
             print("─" * 52)
 
         clock = pygame.time.Clock()
+        dock_icon_frame = 0
         try:
             while self.running:
                 for ev in pygame.event.get():
@@ -2038,6 +2036,12 @@ class ControllerInterface:
                     self._discover_axes()
 
                 self._draw()
+                # Set dock icon after a few frames so SDL has fully settled.
+                # Run in a thread to avoid blocking the event loop.
+                dock_icon_frame += 1
+                if dock_icon_frame == 5:
+                    import threading
+                    threading.Thread(target=self._set_dock_icon, daemon=True).start()
                 clock.tick(60)
 
         except KeyboardInterrupt:
