@@ -89,5 +89,6 @@ app = BUNDLE(
             "(R1 / touchpad)."
         ),
         "NSHighResolutionCapable": True,
+        "NSPrincipalClass": "NSApplication",
     },
 )

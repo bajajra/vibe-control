@@ -331,6 +331,8 @@ class ControllerInterface:
         self._tab_dict_r = pygame.Rect(0, 0, 0, 0)
         self._bind_rows = []
         self._mouse_chip_rects = []
+        self._mode_chip_r = pygame.Rect(0, 0, 0, 0)
+        self._speed_chip_r = pygame.Rect(0, 0, 0, 0)
         self._lang_chip_r = pygame.Rect(0, 0, 0, 0)
         self._lang_dropdown_open = False
         self._lang_dropdown_rects = []  # list of (pygame.Rect, lang_code)
@@ -592,15 +594,31 @@ class ControllerInterface:
         # Resolve icon path (works in both dev and PyInstaller bundle)
         base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
         png_path = os.path.join(base, "vibecontrol_logo.png")
+        icns_path = os.path.join(base, "VibeControl.icns")
 
         # Set pygame window icon from PNG
-        # (Dock icon is handled by Info.plist CFBundleIconFile in the .app bundle)
         if os.path.isfile(png_path):
             try:
                 icon_surf = pygame.image.load(png_path)
                 pygame.display.set_icon(icon_surf)
             except Exception:
                 pass
+
+        # Set macOS dock icon on the EXISTING NSApplication that pygame/SDL
+        # already created. We do NOT call sharedApplication() to avoid creating
+        # a competing instance — instead we import it to access the singleton
+        # that SDL already initialized.
+        try:
+            import objc
+            NSApp = objc.lookUpClass("NSApplication").sharedApplication()
+            NSImage = objc.lookUpClass("NSImage")
+            icon_file = icns_path if os.path.isfile(icns_path) else png_path
+            if os.path.isfile(icon_file):
+                img = NSImage.alloc().initByReferencingFile_(icon_file)
+                if img:
+                    NSApp.setApplicationIconImage_(img)
+        except Exception:
+            pass  # pyobjc not available or failed — non-fatal
 
     def _init_joystick(self):
         self.js = pygame.joystick.Joystick(0)
@@ -1140,17 +1158,21 @@ class ControllerInterface:
         div_y = py + 62
         draw_soft_divider(self.screen, px, panel.right - 24, div_y)
 
-        # row 2: mode + speed chips
+        # row 2: mode + speed chips (clickable)
         chip_y = div_y + 14
         mode_active = self.mode == "NORMAL"
-        mode_r = pygame.Rect(px, chip_y, 100, 28)
-        draw_chip(self.screen, self.font_sm, self.mode, mode_r,
+        self._mode_chip_r = pygame.Rect(px, chip_y, 100, 28)
+        hov_mode = self._mode_chip_r.collidepoint(mx, my)
+        draw_chip(self.screen, self.font_sm, self.mode, self._mode_chip_r,
                   color=COL_ACCENT if mode_active else (200, 60, 80),
                   border_color=COL_ACCENT if mode_active else (200, 60, 80),
-                  bg_color=(40, 12, 18))
+                  bg_color=(40, 12, 18),
+                  hover=hov_mode)
 
-        spd_r = pygame.Rect(px + 112, chip_y, 90, 28)
-        draw_chip(self.screen, self.font_sm, SPEED_LABELS[self.speed_idx], spd_r)
+        self._speed_chip_r = pygame.Rect(px + 112, chip_y, 90, 28)
+        hov_spd = self._speed_chip_r.collidepoint(mx, my)
+        draw_chip(self.screen, self.font_sm, SPEED_LABELS[self.speed_idx],
+                  self._speed_chip_r, hover=hov_spd)
 
         # --- sticks + triggers section ---
         sec_y = chip_y + 46
@@ -1710,6 +1732,14 @@ class ControllerInterface:
                 return
             if self._lang_chip_r.collidepoint(mx, my):
                 self._lang_dropdown_open = True
+                return
+            if self._mode_chip_r.collidepoint(mx, my):
+                self.mode = "CODE" if self.mode == "NORMAL" else "NORMAL"
+                if self.vib_on_mode_change:
+                    self._vibrate_mode_change()
+                return
+            if self._speed_chip_r.collidepoint(mx, my):
+                self.speed_idx = (self.speed_idx + 1) % len(self.speeds)
                 return
             return
         if self.ui_panel != "bindings":
