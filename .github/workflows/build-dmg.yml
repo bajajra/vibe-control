@@ -1,10 +1,9 @@
 # Builds Vibe Control.app with PyInstaller, packages a drag-to-Applications DMG,
-# uploads a workflow artifact, and publishes the DMG as a GitHub Release.
+# and publishes it as a GitHub Release.
 #
-# Triggers:
-#   - workflow_dispatch  → artifact only (Actions tab → workflow run → Artifacts)
-#   - push tag v*        → Release with version name (e.g. git tag v1.0.0 && git push origin v1.0.0)
-#   - push to main       → Release with "latest" rolling tag (auto-created on every merge)
+# Version is read from the VERSION file (single source of truth).
+# On push to main: auto-creates a git tag (v<version>) and a GitHub Release.
+# On workflow_dispatch: builds artifact only (no release).
 
 name: Build macOS DMG
 
@@ -13,8 +12,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
 
 permissions:
   contents: write
@@ -25,6 +22,27 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # needed to check existing tags
+
+      - name: Read version
+        id: version
+        run: |
+          version=$(cat VERSION | tr -d '[:space:]')
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${version}"
+
+      - name: Check if tag already exists
+        id: tag_check
+        if: github.ref == 'refs/heads/main'
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${{ steps.version.outputs.version }} already exists — skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -53,46 +71,26 @@ jobs:
           cp -R "dist/Vibe Control.app" dmg_layout/
           ln -s /Applications dmg_layout/Applications
 
-      - name: DMG filename
-        id: meta
-        shell: bash
-        run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            version="${GITHUB_REF_NAME#v}"          # v0.2 → 0.2
-            stem="vibe-control-${version}"
-            tag="${GITHUB_REF_NAME}"
-            release_name="Release ${GITHUB_REF_NAME}"
-          else
-            stem="vibe-control-latest"
-            tag="latest"
-            release_name="Latest Build (${GITHUB_SHA:0:7})"
-          fi
-          echo "stem=${stem}" >> "$GITHUB_OUTPUT"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
-          echo "Building ${stem}.dmg"
-
       - name: Create DMG
         run: |
           hdiutil create -volname "Vibe Control" -srcfolder dmg_layout -ov -format UDZO \
-            "dist/${{ steps.meta.outputs.stem }}.dmg"
+            "dist/vibe-control-${{ steps.version.outputs.version }}.dmg"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.stem }}
-          path: dist/${{ steps.meta.outputs.stem }}.dmg
+          name: vibe-control-${{ steps.version.outputs.version }}
+          path: dist/vibe-control-${{ steps.version.outputs.version }}.dmg
           if-no-files-found: error
 
-      - name: Publish GitHub Release
-        if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
+      - name: Create tag and publish GitHub Release
+        if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.release_name }}
-          files: dist/${{ steps.meta.outputs.stem }}.dmg
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Vibe Control ${{ steps.version.outputs.tag }}
+          files: dist/vibe-control-${{ steps.version.outputs.version }}.dmg
           generate_release_notes: true
-          prerelease: ${{ github.ref_type != 'tag' }}
-          make_latest: ${{ github.ref_type == 'tag' && 'true' || 'false' }}
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

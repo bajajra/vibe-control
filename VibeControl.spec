@@ -4,6 +4,9 @@
 import os
 import speech_recognition as sr
 
+with open("VERSION") as f:
+    version = f.read().strip()
+
 sr_dir = os.path.dirname(sr.__file__)
 
 a = Analysis(
@@ -78,8 +81,8 @@ app = BUNDLE(
         "CFBundleName": "Vibe Control",
         "CFBundleDisplayName": "Vibe Control",
         "CFBundleIconFile": "VibeControl",
-        "CFBundleVersion": "0.1.0",
-        "CFBundleShortVersionString": "0.1",
+        "CFBundleVersion": version,
+        "CFBundleShortVersionString": version,
         "LSMinimumSystemVersion": "12.0",
         "NSMicrophoneUsageDescription": (
             "Vibe Control needs microphone access for voice dictation "
