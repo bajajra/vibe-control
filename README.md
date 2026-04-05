@@ -42,7 +42,34 @@
 
 ## Installation & usage
 
-### Option A — Run from source (developers)
+### Option A — Download the prebuilt DMG
+
+Prebuilt **Apple Silicon (arm64)** DMGs are available on the [**Releases**](https://github.com/bajajra/vibe-control/releases) page.
+
+| Release | DMG filename | When it's built |
+|---------|-------------|-----------------|
+| **Tagged release** (e.g. `v0.1`) | `vibe-control-0.1.dmg` | When a version tag is pushed |
+| **Latest (rolling)** | `vibe-control-latest.dmg` | Every time code is merged to `main` |
+
+#### How to install
+
+1. Go to [**Releases**](https://github.com/bajajra/vibe-control/releases) and download the DMG (e.g. `vibe-control-0.1.dmg`).
+2. Open the DMG — you'll see **Vibe Control.app** and an **Applications** shortcut.
+3. Drag **Vibe Control.app** into **Applications**.
+4. Eject the DMG.
+5. Open **Vibe Control** from Applications (or Spotlight).
+6. If macOS blocks the app, right-click → **Open** once to bypass Gatekeeper.
+
+#### Required permissions
+
+After first launch, grant these in **System Settings → Privacy & Security**:
+
+- **Accessibility** → enable **Vibe Control** (mouse/keyboard control + approval-prompt detection).
+- **Microphone** → enable **Vibe Control** (voice dictation).
+
+> **Intel Macs:** the prebuilt DMG targets **arm64** only. Build locally from source (Option B) or change `target_arch` in `VibeControl.spec` to `x86_64` or `universal2`.
+
+### Option B — Run from source (developers)
 
 ```bash
 # Audio capture (needed for `pip install pyaudio` on many Macs)
@@ -62,34 +89,13 @@ python main.py --config path.json  # custom config
 python main.py --sensitivity 1.2   # mouse sensitivity multiplier
 ```
 
-### Option B — macOS app (PyInstaller)
-
-Build:
+### Option C — Build macOS app locally (PyInstaller)
 
 ```bash
 pyinstaller VibeControl.spec --noconfirm
 ```
 
 Output: **`dist/Vibe Control.app`**. Put that in **Applications**, or wrap it in a **DMG** for distribution.
-
-### Option C — Prebuilt DMG (GitHub Actions)
-
-CI builds an **Apple Silicon (arm64)** DMG on every manual run and on **version tags**.
-
-| How | What you get |
-|-----|----------------|
-| **[Actions](https://github.com/bajajra/vibe-control/actions)** → **Build macOS DMG** → **Run workflow** | Download the **artifact** from the completed run (no Release required). |
-| **Release** | Create a tag such as `v1.0.0` and push it: `git tag v1.0.0 && git push origin v1.0.0`. The workflow attaches **`VibeControl-v1.0.0-macos-arm64.dmg`** to a GitHub Release. |
-
-The DMG includes **Vibe Control.app** and an **Applications** shortcut for drag-and-drop install.
-
-> **Intel Macs:** this workflow targets **arm64** only. Build locally from source or adjust `VibeControl.spec` (`target_arch`) for `x86_64` or `universal2` if you need Intel binaries.
-
-**First launch**
-
-1. If macOS blocks the download, use **right-click → Open** once (Gatekeeper).
-2. Allow **Accessibility**: **System Settings → Privacy & Security → Accessibility** → enable **Vibe Control**.
-3. Allow **Microphone**: **Privacy & Security → Microphone** → enable **Vibe Control**.
 
 **Editing settings in the `.app`**
 

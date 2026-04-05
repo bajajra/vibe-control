@@ -58,11 +58,12 @@ jobs:
         shell: bash
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            stem="VibeControl-${GITHUB_REF_NAME}-macos-arm64"
+            version="${GITHUB_REF_NAME#v}"          # v0.2 → 0.2
+            stem="vibe-control-${version}"
             tag="${GITHUB_REF_NAME}"
             release_name="Release ${GITHUB_REF_NAME}"
           else
-            stem="VibeControl-latest-macos-arm64"
+            stem="vibe-control-latest"
             tag="latest"
             release_name="Latest Build (${GITHUB_SHA:0:7})"
           fi
