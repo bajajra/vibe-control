@@ -15,6 +15,8 @@ a = Analysis(
     binaries=[],
     datas=[
         ("config.json", "."),
+        ("vibecontrol_logo.png", "."),
+        ("VibeControl.icns", "."),
         (sr_dir, "speech_recognition"),
     ],
     hiddenimports=[
@@ -87,6 +89,10 @@ app = BUNDLE(
         "NSMicrophoneUsageDescription": (
             "Vibe Control needs microphone access for voice dictation "
             "(R1 / touchpad)."
+        ),
+        "NSAppleEventsUsageDescription": (
+            "Vibe Control needs accessibility access "
+            "to move the mouse and send keyboard shortcuts."
         ),
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
