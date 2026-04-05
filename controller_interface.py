@@ -2037,11 +2037,9 @@ class ControllerInterface:
 
                 self._draw()
                 # Set dock icon after a few frames so SDL has fully settled.
-                # Run in a thread to avoid blocking the event loop.
                 dock_icon_frame += 1
                 if dock_icon_frame == 5:
-                    import threading
-                    threading.Thread(target=self._set_dock_icon, daemon=True).start()
+                    self._set_dock_icon()
                 clock.tick(60)
 
         except KeyboardInterrupt:
