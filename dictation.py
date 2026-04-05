@@ -3,6 +3,7 @@ Voice dictation handler — records while R1 is held, transcribes on release.
 Uses PyAudio for recording and Google Speech Recognition for transcription.
 """
 
+import re
 import threading
 import subprocess
 import time
@@ -18,10 +19,13 @@ class DictationHandler:
     CHUNK = 1024
     FORMAT = pyaudio.paInt16
 
-    def __init__(self, engine="google", language="en-US"):
+    def __init__(self, engine="google", language="en-US", corrections=None):
         self.engine = engine
         self.language = language
         self.recognizer = sr.Recognizer()
+        self.recognizer.energy_threshold = 150  # lower = more sensitive (default 300)
+        self.recognizer.dynamic_energy_threshold = False
+        self._corrections = self._compile_corrections(corrections or {})
 
         self._recording = False
         self._frames = []
@@ -30,6 +34,20 @@ class DictationHandler:
         self._on_transcription = None
         self._on_status = None
         self.mic_available = self._check_mic()
+
+    @staticmethod
+    def _compile_corrections(corrections):
+        """Pre-compile correction patterns sorted longest-first for greedy matching."""
+        compiled = []
+        for pattern, replacement in sorted(corrections.items(), key=lambda x: -len(x[0])):
+            compiled.append((re.compile(re.escape(pattern), re.IGNORECASE), replacement))
+        return compiled
+
+    def _apply_corrections(self, text):
+        """Apply all corrections to transcribed text."""
+        for pattern, replacement in self._corrections:
+            text = pattern.sub(replacement, text)
+        return text
 
     @staticmethod
     def _check_mic():
@@ -125,6 +143,7 @@ class DictationHandler:
                 text = self.recognizer.recognize_google(audio, language=self.language)
 
             if text:
+                text = self._apply_corrections(text)
                 self._emit_status("typing")
                 if self._on_transcription:
                     self._on_transcription(text)

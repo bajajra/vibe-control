@@ -15,7 +15,10 @@ _STRONG = re.compile(
     r"requires?\s+(your\s+)?approval|permission\s+to\s+run|"
     r"execute\s+(this\s+)?(command|shell)|approve\s+(this|execution)|"
     r"shell\s+command|pending\s+approval|"
-    r"\[y/n\]|y\s*/\s*n|yes\s*/\s*no|\(\s*y\s*/\s*n\s*\)",
+    r"\[y/n\]|\[Y/n\]|\[yes/no\]|y\s*/\s*n|yes\s*/\s*no|\(\s*y\s*/\s*n\s*\)|"
+    # Claude Code specific patterns
+    r"allow\s+\w+.*\?|do\s+you\s+want\s+to\s+(run|allow|execute)|"
+    r"approve\s+\w+.*\?|always\s+allow|accept\s*\?|deny",
     re.I,
 )
 

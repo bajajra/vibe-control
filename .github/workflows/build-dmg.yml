@@ -1,15 +1,18 @@
 # Builds Vibe Control.app with PyInstaller, packages a drag-to-Applications DMG,
-# uploads a workflow artifact, and (on version tags) attaches the DMG to a GitHub Release.
+# uploads a workflow artifact, and publishes the DMG as a GitHub Release.
 #
 # Triggers:
 #   - workflow_dispatch  → artifact only (Actions tab → workflow run → Artifacts)
-#   - push tag v*        → artifact + Release with DMG (e.g. git tag v1.0.0 && git push origin v1.0.0)
+#   - push tag v*        → Release with version name (e.g. git tag v1.0.0 && git push origin v1.0.0)
+#   - push to main       → Release with "latest" rolling tag (auto-created on every merge)
 
 name: Build macOS DMG
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
@@ -56,10 +59,16 @@ jobs:
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             stem="VibeControl-${GITHUB_REF_NAME}-macos-arm64"
+            tag="${GITHUB_REF_NAME}"
+            release_name="Release ${GITHUB_REF_NAME}"
           else
-            stem="VibeControl-nightly-${GITHUB_SHA:0:7}"
+            stem="VibeControl-latest-macos-arm64"
+            tag="latest"
+            release_name="Latest Build (${GITHUB_SHA:0:7})"
           fi
           echo "stem=${stem}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
           echo "Building ${stem}.dmg"
 
       - name: Create DMG
@@ -74,11 +83,15 @@ jobs:
           path: dist/${{ steps.meta.outputs.stem }}.dmg
           if-no-files-found: error
 
-      - name: Publish GitHub Release (tags only)
-        if: github.ref_type == 'tag'
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.release_name }}
           files: dist/${{ steps.meta.outputs.stem }}.dmg
           generate_release_notes: true
+          prerelease: ${{ github.ref_type != 'tag' }}
+          make_latest: ${{ github.ref_type == 'tag' && 'true' || 'false' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

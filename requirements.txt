@@ -4,3 +4,4 @@ SpeechRecognition>=3.10.0
 PyAudio>=0.2.13
 pyobjc-framework-Cocoa>=10.0
 pyobjc-framework-ApplicationServices>=10.0
+hidapi>=0.14.0
