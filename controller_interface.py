@@ -592,26 +592,15 @@ class ControllerInterface:
         # Resolve icon path (works in both dev and PyInstaller bundle)
         base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
         png_path = os.path.join(base, "vibecontrol_logo.png")
-        icns_path = os.path.join(base, "VibeControl.icns")
 
         # Set pygame window icon from PNG
+        # (Dock icon is handled by Info.plist CFBundleIconFile in the .app bundle)
         if os.path.isfile(png_path):
             try:
                 icon_surf = pygame.image.load(png_path)
                 pygame.display.set_icon(icon_surf)
             except Exception:
                 pass
-
-        # Set macOS dock icon via AppKit (overrides the default Python rocket)
-        try:
-            from AppKit import NSApplication, NSImage
-            icon_file = icns_path if os.path.isfile(icns_path) else png_path
-            if os.path.isfile(icon_file):
-                app = NSApplication.sharedApplication()
-                img = NSImage.alloc().initByReferencingFile_(icon_file)
-                app.setApplicationIconImage_(img)
-        except Exception:
-            pass  # AppKit not available or failed — non-fatal
 
     def _init_joystick(self):
         self.js = pygame.joystick.Joystick(0)
