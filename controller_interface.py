@@ -351,6 +351,7 @@ class ControllerInterface:
         self._dict_add_btn_r = pygame.Rect(0, 0, 0, 0)
 
         self._init_pygame()
+        self._init_joystick()
 
     # ------------------------------------------------------------------ init
 
@@ -575,6 +576,7 @@ class ControllerInterface:
 
         self.screen = pygame.display.set_mode((720, 540), pygame.RESIZABLE)
         pygame.display.set_caption("Vibe Control")
+        self._set_app_icon()
         self.font = pygame.font.SysFont("helveticaneue", 15)
         self.font_lg = pygame.font.SysFont("helveticaneue", 19, bold=True)
         self.font_sm = pygame.font.SysFont("helveticaneue", 13)
@@ -585,6 +587,33 @@ class ControllerInterface:
             pygame.quit()
             sys.exit(1)
 
+    def _set_app_icon(self):
+        """Set the window icon and macOS dock icon from the app logo."""
+        # Resolve icon path (works in both dev and PyInstaller bundle)
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        png_path = os.path.join(base, "vibecontrol_logo.png")
+        icns_path = os.path.join(base, "VibeControl.icns")
+
+        # Set pygame window icon from PNG
+        if os.path.isfile(png_path):
+            try:
+                icon_surf = pygame.image.load(png_path)
+                pygame.display.set_icon(icon_surf)
+            except Exception:
+                pass
+
+        # Set macOS dock icon via AppKit (overrides the default Python rocket)
+        try:
+            from AppKit import NSApplication, NSImage
+            icon_file = icns_path if os.path.isfile(icns_path) else png_path
+            if os.path.isfile(icon_file):
+                app = NSApplication.sharedApplication()
+                img = NSImage.alloc().initByReferencingFile_(icon_file)
+                app.setApplicationIconImage_(img)
+        except Exception:
+            pass  # AppKit not available or failed — non-fatal
+
+    def _init_joystick(self):
         self.js = pygame.joystick.Joystick(0)
         self.js.init()
         self._js_instance_id = self.js.get_instance_id()
