@@ -58,7 +58,13 @@ Prebuilt **Apple Silicon (arm64)** DMGs are available on the [**Releases**](http
 3. Drag **Vibe Control.app** into **Applications**.
 4. Eject the DMG.
 5. Open **Vibe Control** from Applications (or Spotlight).
-6. If macOS blocks the app, right-click → **Open** once to bypass Gatekeeper.
+6. **macOS will block the first launch** ("Apple could not verify…") because the app is not code-signed. To fix this, run once in Terminal:
+   ```bash
+   xattr -cr /Applications/Vibe\ Control.app
+   ```
+   Then open the app normally. Alternatively:
+   - **Right-click** the app → **Open** → **Open** in the dialog, or
+   - Go to **System Settings → Privacy & Security**, scroll down to find the blocked message for Vibe Control, and click **Open Anyway**.
 
 #### Required permissions
 
